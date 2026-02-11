@@ -10,8 +10,8 @@
 {"command": "set_keyframe", "guid": "Test_Light", "property_type": "position", "frame": 30, "value": [100, 0, -1500]}
 {"command": "group_objects", "object_names": ["Test_Pyramid", "Test_Light"], "group_name": "Test_Group"}
 {"command": "render_preview", "width": 800, "height": 600, "frame": 0}
-{"command": "render_frame", "output_path": "/Users/winepegs/cinema4d-mcp/tests/test_render.png", "width": 1920, "height": 1080}
+{"command": "render_frame", "output_path": "test_render.png", "width": 1920, "height": 1080}
 {"command": "get_scene_info"}
 {"command": "list_objects"}
-{"command": "snapshot_scene", "file_path": "/Users/winepegs/cinema4d-mcp/tests/test_harness_snapshot.c4d", "include_assets": true}
-{"command": "save_scene", "file_path": "/Users/winepegs/cinema4d-mcp/tests/test_harness_scene.c4d"}
+{"command": "snapshot_scene", "file_path": "test_harness_snapshot.c4d", "include_assets": true}
+{"command": "save_scene", "file_path": "test_harness_scene.c4d"}
