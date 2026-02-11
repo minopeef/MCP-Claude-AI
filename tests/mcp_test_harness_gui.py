@@ -1,14 +1,23 @@
-import socket
+"""
+MCP Test Harness GUI.
+
+Sends JSONL command sequences to the Cinema 4D socket server (plugin) and displays
+responses. Substitutes object/material names with GUIDs from previous responses so
+multi-step tests can reference created objects. Run with the C4D plugin server
+listening on C4D_HOST:C4D_PORT (default 127.0.0.1:5555).
+"""
+
+import copy
 import json
+import os
+import socket
+import threading
 import time
 import tkinter as tk
 from tkinter import filedialog, messagebox, scrolledtext
-import threading
-import os
-import copy  # Needed for deep copying commands
 
-SERVER_HOST = "localhost"
-SERVER_PORT = 5555
+SERVER_HOST = os.environ.get("C4D_HOST", "127.0.0.1")
+SERVER_PORT = int(os.environ.get("C4D_PORT", "5555"))
 
 
 class MCPTestHarnessGUI:
@@ -114,7 +123,7 @@ class MCPTestHarnessGUI:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
                 self.log(f"Connecting to MCP server at {SERVER_HOST}:{SERVER_PORT}...")
                 sock.connect((SERVER_HOST, SERVER_PORT))
-                self.log("Connected ✅\n--- Test Start ---")
+                self.log("Connected.\n--- Test Start ---")
 
                 with open(test_file, "r", encoding="utf-8") as f:
                     for line_num, line in enumerate(f, 1):
@@ -125,7 +134,7 @@ class MCPTestHarnessGUI:
                             # Load original command from file
                             original_command = json.loads(line.strip())
                             self.log(
-                                f"\n▶️ Command {line_num} (Original): {json.dumps(original_command)}"
+                                f"\nCommand {line_num} (Original): {json.dumps(original_command)}"
                             )
 
                             # --- MODIFIED: Substitute placeholders before sending ---
@@ -213,7 +222,7 @@ class MCPTestHarnessGUI:
                                             )
 
                             self.log(
-                                f"✅ Response {line_num}: {json.dumps(loggable_response, indent=2)}"
+                                f"Response {line_num}: {json.dumps(loggable_response, indent=2)}"
                             )
 
                             # --- ADDED: Capture GUID from response ---
@@ -259,11 +268,11 @@ class MCPTestHarnessGUI:
                             time.sleep(0.1)
 
                         except json.JSONDecodeError as e:
-                            self.log(f"❌ Error decoding JSON for line {line_num}: {e}")
+                            self.log(f"Error decoding JSON for line {line_num}: {e}")
                             self.log(f"   Raw line: {line.strip()}")
                             break  # Stop test on error
                         except Exception as cmd_e:
-                            self.log(f"❌ Error processing command {line_num}: {cmd_e}")
+                            self.log(f"Error processing command {line_num}: {cmd_e}")
                             import traceback
 
                             self.log(traceback.format_exc())
@@ -273,7 +282,7 @@ class MCPTestHarnessGUI:
 
         except ConnectionRefusedError:
             self.log(
-                f"❌ Connection Refused: Ensure C4D plugin server is running on {SERVER_HOST}:{SERVER_PORT}."
+                f"Connection Refused: Ensure C4D plugin server is running on {SERVER_HOST}:{SERVER_PORT}."
             )
             messagebox.showerror(
                 "Connection Error",
@@ -281,11 +290,11 @@ class MCPTestHarnessGUI:
             )
         except socket.timeout:
             self.log(
-                f"❌ Connection Timeout: Could not connect to {SERVER_HOST}:{SERVER_PORT}."
+                f"Connection Timeout: Could not connect to {SERVER_HOST}:{SERVER_PORT}."
             )
             messagebox.showerror("Connection Error", "Connection Timeout.")
         except Exception as e:
-            self.log(f"❌ Unexpected Error: {str(e)}")
+            self.log(f"Unexpected Error: {str(e)}")
             import traceback
 
             self.log(traceback.format_exc())
