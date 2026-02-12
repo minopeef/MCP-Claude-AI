@@ -1,7 +1,7 @@
 """
 Cinema 4D MCP Server Plugin
-Updated for Cinema 4D R2025 compatibility
-Version 0.1.8 - Context awareness
+Updated for Cinema 4D R2025 compatibility.
+Version 0.1.9 - Context awareness; render_preview/snapshot params; alignment with MCP server.
 """
 
 import c4d
@@ -29,7 +29,7 @@ print(f"[C4D MCP] Python version: {sys.version}")
 # Warn if using unsupported version
 if C4D_VERSION_MAJOR < 20:
     print(
-        "[C4D MCP] ## Warning ##: This plugin is in development for Cinema 4D 2025 or later with plans to futher support earlier versions. Some features may not work correctly."
+        "[C4D MCP] ## Warning ##: This plugin is in development for Cinema 4D 2025 or later with plans to further support earlier versions. Some features may not work correctly."
     )
 
 
@@ -253,7 +253,12 @@ class C4DSocketServer(threading.Thread):
                         elif command_type == "render_frame":
                             response = self.handle_render_frame(command)
                         elif command_type == "render_preview":
-                            response = self.handle_render_preview_base64()
+                            frame = command.get("frame")
+                            width = command.get("width", 640)
+                            height = command.get("height", 360)
+                            response = self.handle_render_preview_base64(
+                                frame=frame, width=width, height=height
+                            )
                         elif command_type == "snapshot_scene":
                             response = self.handle_snapshot_scene(command)
                         # Camera & light handling
@@ -1287,8 +1292,10 @@ class C4DSocketServer(threading.Thread):
                 f"[**ERROR**] Failed to register object '{failed_name}': {e}\n{traceback.format_exc()}"
             )
 
-    def handle_render_preview_base64(self, frame=0, width=640, height=360):
-        """SDK 2025-compliant base64 renderer with error resolution"""
+    def handle_render_preview_base64(self, frame=None, width=640, height=360):
+        """SDK 2025-compliant base64 renderer with error resolution.
+        Returns dict with image_data, width, height, format for MCP server compatibility.
+        """
         import c4d
         import base64
         import traceback
@@ -1298,6 +1305,9 @@ class C4DSocketServer(threading.Thread):
                 doc = c4d.documents.GetActiveDocument()
                 if not doc:
                     return {"error": "No active document"}
+
+                # Resolve frame from document if not provided
+                actual_frame = frame if frame is not None else doc.GetTime().GetFrame(doc.GetFps())
 
                 # 1. Camera Validation (Critical Fix)
                 if not doc.GetActiveBaseDraw().GetSceneCamera(doc):
@@ -1337,7 +1347,7 @@ class C4DSocketServer(threading.Thread):
                     bmp.AddChannel(True, True)  # Required alpha
 
                     # 6. Frame Synchronization
-                    doc.SetTime(c4d.BaseTime(frame, doc.GetFps()))
+                    doc.SetTime(c4d.BaseTime(actual_frame, doc.GetFps()))
                     doc.ExecutePasses(None, True, True, True, c4d.BUILDFLAGS_NONE)
 
                     # 7. Core Render Execution
@@ -1356,9 +1366,15 @@ class C4DSocketServer(threading.Thread):
                         return {"error": "PNG encoding failed"}
 
                     data, _ = mem_file.GetData()
+                    image_b64 = f"data:image/png;base64,{base64.b64encode(data).decode()}"
                     return {
                         "success": True,
-                        "image_base64": f"data:image/png;base64,{base64.b64encode(data).decode()}",
+                        "image_base64": image_b64,
+                        "image_data": image_b64,
+                        "width": width,
+                        "height": height,
+                        "format": "png",
+                        "frame": actual_frame,
                     }
 
                 finally:
@@ -1372,7 +1388,14 @@ class C4DSocketServer(threading.Thread):
             except Exception as e:
                 return {"error": f"Render failure: {str(e)}"}
 
-        return self.execute_on_main_thread(_execute_render, _timeout=120)
+        raw = self.execute_on_main_thread(_execute_render, _timeout=120)
+        # Ensure MCP server gets image_data, width, height, format even on success
+        if isinstance(raw, dict) and raw.get("success") and "image_data" not in raw:
+            raw["image_data"] = raw.get("image_base64")
+            raw.setdefault("width", width)
+            raw.setdefault("height", height)
+            raw.setdefault("format", "png")
+        return raw
 
     def _render_code_to_str(self, code):
         """Convert Cinema4D render result codes to human-readable strings"""
@@ -2067,13 +2090,21 @@ class C4DSocketServer(threading.Thread):
         """
         Generates a snapshot: object list + base64 preview render.
         Uses the corrected core render logic via handle_render_preview_base64.
+        Accepts width, height, frame, file_path, include_assets from command.
+        Returns snapshot key for MCP server compatibility (path, size, timestamp).
         """
+        command = command or {}
         doc = c4d.documents.GetActiveDocument()
         if not doc:
             return {"error": "No active document for snapshot."}
 
-        frame = doc.GetTime().GetFrame(doc.GetFps())
-        width, height = 640, 360
+        width = command.get("width", 640)
+        height = command.get("height", 360)
+        frame = command.get("frame")
+        if frame is None:
+            frame = doc.GetTime().GetFrame(doc.GetFps())
+        file_path = command.get("file_path", "")
+        include_assets = command.get("include_assets", False)
 
         self.log(f"[C4D SNAPSHOT] Generating snapshot for frame {frame}...")
 
@@ -2082,10 +2113,9 @@ class C4DSocketServer(threading.Thread):
         objects = object_data.get("objects", [])
 
         # 2. Render preview - uses handle_render_preview_base64 which now uses corrected core logic
-        render_command = {"width": width, "height": height, "frame": frame}
         render_result = self.handle_render_preview_base64(
-            **render_command
-        )  # Runs via execute_on_main_thread
+            frame=frame, width=width, height=height
+        )
 
         render_info = {}
         if render_result and render_result.get("success"):
@@ -2093,23 +2123,35 @@ class C4DSocketServer(threading.Thread):
                 "frame": render_result.get("frame", frame),
                 "resolution": f"{render_result.get('width', width)}x{render_result.get('height', height)}",
                 "image_base64": render_result.get("image_base64"),
+                "image_data": render_result.get("image_data"),
                 "render_time": render_result.get("render_time", 0.0),
                 "format": render_result.get("format", "png"),
                 "success": True,
             }
             self.log(f"[C4D SNAPSHOT] Render successful.")
         else:
-            error_msg = render_result.get("error", "Unknown rendering error")
+            error_msg = render_result.get("error", "Unknown rendering error") if isinstance(render_result, dict) else "Unknown rendering error"
             render_info = {"error": error_msg, "success": False}
             self.log(f"[C4D SNAPSHOT] Render failed: {error_msg}")
-            # Include traceback from render result if available
             if isinstance(render_result, dict) and "traceback" in render_result:
                 render_info["traceback"] = render_result["traceback"]
 
-        # 3. Return combined result
+        # Snapshot metadata for MCP server (path, size, timestamp)
+        snapshot_path = file_path if file_path else "in-memory"
+        import datetime
+        snapshot_meta = {
+            "path": snapshot_path,
+            "size": len(objects),
+            "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+        }
+        if include_assets:
+            snapshot_meta["assets"] = []
+
+        # 3. Return combined result with snapshot key
         return {
             "objects": objects,
             "render": render_info,
+            "snapshot": snapshot_meta,
         }
 
     def handle_set_keyframe(self, command):

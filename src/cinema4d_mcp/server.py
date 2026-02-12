@@ -56,8 +56,13 @@ def send_to_c4d(connection: C4DConnection, command: Dict[str, Any]) -> Dict[str,
     command_type = command.get("command", "")
 
     # Long-running operations need longer timeouts
-    if command_type in ["render_frame", "apply_mograph_fields"]:
-        timeout = 120  # 2 minutes for render operations
+    if command_type in [
+        "render_frame",
+        "render_preview",
+        "snapshot_scene",
+        "apply_mograph_fields",
+    ]:
+        timeout = 120  # 2 minutes for render/snapshot operations
         logger.info(f"Using extended timeout ({timeout}s) for {command_type}")
     else:
         timeout = 20  # Default timeout for regular operations
@@ -77,7 +82,12 @@ def send_to_c4d(connection: C4DConnection, command: Dict[str, Any]) -> Dict[str,
         max_time = start_time + timeout
 
         # Log for long-running operations
-        if command_type in ["render_frame", "apply_mograph_fields"]:
+        if command_type in [
+            "render_frame",
+            "render_preview",
+            "snapshot_scene",
+            "apply_mograph_fields",
+        ]:
             logger.info(
                 f"Waiting for response from {command_type} (timeout: {timeout}s)"
             )
@@ -101,7 +111,13 @@ def send_to_c4d(connection: C4DConnection, command: Dict[str, Any]) -> Dict[str,
                 # For long operations, log progress on data receipt
                 elapsed = time.time() - start_time
                 if (
-                    command_type in ["render_frame", "apply_mograph_fields"]
+                    command_type
+                    in [
+                        "render_frame",
+                        "render_preview",
+                        "snapshot_scene",
+                        "apply_mograph_fields",
+                    ]
                     and elapsed > 5
                 ):
                     logger.debug(
