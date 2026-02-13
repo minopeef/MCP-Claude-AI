@@ -42,14 +42,19 @@ def main():
     log_to_stderr(f"Current directory: {os.getcwd()}")
     log_to_stderr(f"Python path: {sys.path}")
 
-    # Check if Cinema 4D socket is available
-    c4d_host = os.environ.get("C4D_HOST", "127.0.0.1")
-    c4d_port = int(os.environ.get("C4D_PORT", 5555))
+    # Check if Cinema 4D socket is available (use package config when importable)
+    try:
+        from cinema4d_mcp.config import C4D_HOST, C4D_PORT, C4D_TIMEOUT_CHECK
+        c4d_host, c4d_port, c4d_timeout = C4D_HOST, C4D_PORT, C4D_TIMEOUT_CHECK
+    except ImportError:
+        c4d_host = os.environ.get("C4D_HOST", "127.0.0.1")
+        c4d_port = int(os.environ.get("C4D_PORT", 5555))
+        c4d_timeout = 5
 
     log_to_stderr(f"Checking connection to Cinema 4D on {c4d_host}:{c4d_port}")
     try:
         test_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        test_socket.settimeout(5)  # Set 5 second timeout
+        test_socket.settimeout(c4d_timeout)
         test_socket.connect((c4d_host, c4d_port))
         test_socket.close()
         log_to_stderr("✅ Successfully connected to Cinema 4D socket!")
