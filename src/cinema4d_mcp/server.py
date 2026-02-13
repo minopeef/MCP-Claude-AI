@@ -13,7 +13,13 @@ from mcp.server.fastmcp import FastMCP, Context
 from starlette.routing import Route
 from starlette.responses import JSONResponse
 
-from .config import C4D_HOST, C4D_PORT
+from .config import (
+    C4D_HOST,
+    C4D_PORT,
+    C4D_TIMEOUT_DEFAULT,
+    C4D_TIMEOUT_LONG,
+    LONG_TIMEOUT_COMMANDS,
+)
 from .utils import logger, check_c4d_connection
 
 
@@ -55,17 +61,12 @@ def send_to_c4d(connection: C4DConnection, command: Dict[str, Any]) -> Dict[str,
     # Set appropriate timeout based on command type
     command_type = command.get("command", "")
 
-    # Long-running operations need longer timeouts
-    if command_type in [
-        "render_frame",
-        "render_preview",
-        "snapshot_scene",
-        "apply_mograph_fields",
-    ]:
-        timeout = 120  # 2 minutes for render/snapshot operations
+    # Long-running operations use configurable long timeout
+    if command_type in LONG_TIMEOUT_COMMANDS:
+        timeout = C4D_TIMEOUT_LONG
         logger.info(f"Using extended timeout ({timeout}s) for {command_type}")
     else:
-        timeout = 20  # Default timeout for regular operations
+        timeout = C4D_TIMEOUT_DEFAULT
 
     try:
         # Convert command to JSON and send it
@@ -82,12 +83,7 @@ def send_to_c4d(connection: C4DConnection, command: Dict[str, Any]) -> Dict[str,
         max_time = start_time + timeout
 
         # Log for long-running operations
-        if command_type in [
-            "render_frame",
-            "render_preview",
-            "snapshot_scene",
-            "apply_mograph_fields",
-        ]:
+        if command_type in LONG_TIMEOUT_COMMANDS:
             logger.info(
                 f"Waiting for response from {command_type} (timeout: {timeout}s)"
             )
@@ -110,16 +106,7 @@ def send_to_c4d(connection: C4DConnection, command: Dict[str, Any]) -> Dict[str,
 
                 # For long operations, log progress on data receipt
                 elapsed = time.time() - start_time
-                if (
-                    command_type
-                    in [
-                        "render_frame",
-                        "render_preview",
-                        "snapshot_scene",
-                        "apply_mograph_fields",
-                    ]
-                    and elapsed > 5
-                ):
+                if command_type in LONG_TIMEOUT_COMMANDS and elapsed > 5:
                     logger.debug(
                         f"Received partial data for {command_type} ({len(response_data)} bytes, {elapsed:.1f}s elapsed)"
                     )
