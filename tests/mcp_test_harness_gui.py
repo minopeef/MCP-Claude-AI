@@ -9,15 +9,19 @@ listening on C4D_HOST:C4D_PORT (default 127.0.0.1:5555).
 
 import copy
 import json
-import os
 import socket
 import threading
 import time
 import tkinter as tk
 from tkinter import filedialog, messagebox, scrolledtext
 
-SERVER_HOST = os.environ.get("C4D_HOST", "127.0.0.1")
-SERVER_PORT = int(os.environ.get("C4D_PORT", "5555"))
+try:
+    from cinema4d_mcp.config import C4D_HOST, C4D_PORT
+    SERVER_HOST, SERVER_PORT = C4D_HOST, C4D_PORT
+except ImportError:
+    import os
+    SERVER_HOST = os.environ.get("C4D_HOST", "127.0.0.1")
+    SERVER_PORT = int(os.environ.get("C4D_PORT", "5555"))
 
 
 class MCPTestHarnessGUI:

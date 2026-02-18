@@ -2,7 +2,6 @@
 
 import socket
 import json
-import os
 import math
 import time
 from dataclasses import dataclass
@@ -16,11 +15,16 @@ from starlette.responses import JSONResponse
 from .config import (
     C4D_HOST,
     C4D_PORT,
+    C4D_TIMEOUT_CHECK,
     C4D_TIMEOUT_DEFAULT,
     C4D_TIMEOUT_LONG,
     LONG_TIMEOUT_COMMANDS,
 )
 from .utils import logger, check_c4d_connection
+
+# Constants
+MSG_NOT_CONNECTED = "❌ Not connected to Cinema 4D"
+RECV_CHUNK_SIZE = 8192
 
 
 @dataclass
@@ -29,28 +33,36 @@ class C4DConnection:
     connected: bool = False
 
 
-# Asynchronous context manager for Cinema 4D connection
 @asynccontextmanager
 async def c4d_connection_context():
     """Asynchronous context manager for Cinema 4D connection."""
     connection = C4DConnection()
     try:
-        # Initialize connection to Cinema 4D
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(C4D_TIMEOUT_CHECK)
         sock.connect((C4D_HOST, C4D_PORT))
         connection.sock = sock
         connection.connected = True
-        logger.info(f"✅ Connected to Cinema 4D at {C4D_HOST}:{C4D_PORT}")
-        yield connection  # Yield the connection
+        logger.info("✅ Connected to Cinema 4D at %s:%s", C4D_HOST, C4D_PORT)
+        yield connection
     except Exception as e:
-        logger.error(f"❌ Failed to connect to Cinema 4D: {str(e)}")
-        connection.connected = False  # Ensure connection is marked as not connected
-        yield connection  # Still yield the connection object
+        logger.error("❌ Failed to connect to Cinema 4D: %s", e)
+        connection.connected = False
+        yield connection
     finally:
-        # Clean up on server shutdown
         if connection.sock:
             connection.sock.close()
             logger.info("🔌 Disconnected from Cinema 4D")
+
+
+def _run_command(connection: C4DConnection, command: Dict[str, Any]) -> Union[str, Dict[str, Any]]:
+    """Execute a command and return either an error string or the response dict."""
+    if not connection.connected or not connection.sock:
+        return MSG_NOT_CONNECTED
+    response = send_to_c4d(connection, command)
+    if "error" in response:
+        return f"❌ Error: {response['error']}"
+    return response
 
 
 def send_to_c4d(connection: C4DConnection, command: Dict[str, Any]) -> Dict[str, Any]:
@@ -90,7 +102,7 @@ def send_to_c4d(connection: C4DConnection, command: Dict[str, Any]) -> Dict[str,
 
         while time.time() < max_time:
             try:
-                chunk = connection.sock.recv(4096)
+                chunk = connection.sock.recv(RECV_CHUNK_SIZE)
                 if not chunk:
                     # If we receive an empty chunk, the connection might be closed
                     if not response_data:
@@ -167,16 +179,10 @@ mcp = FastMCP(title="Cinema4D", routes=[Route("/", endpoint=homepage)])
 async def get_scene_info(ctx: Context) -> str:
     """Get information about the current Cinema 4D scene."""
     async with c4d_connection_context() as connection:
-        if not connection.connected:
-            return "❌ Not connected to Cinema 4D"
-
-        response = send_to_c4d(connection, {"command": "get_scene_info"})
-
-        if "error" in response:
-            return f"❌ Error: {response['error']}"
-
-        # Format scene info nicely
-        scene_info = response.get("scene_info", {})
+        result = _run_command(connection, {"command": "get_scene_info"})
+        if isinstance(result, str):
+            return result
+        scene_info = result.get("scene_info", {})
         return f"""
 # Cinema 4D Scene Information
 - **Filename**: {scene_info.get('filename', 'Untitled')}
@@ -206,31 +212,15 @@ async def add_primitive(
         position: Optional [x, y, z] position
         size: Optional [x, y, z] size or dimensions
     """
+    command = {"command": "add_primitive", "type": primitive_type}
+    if name:
+        command["object_name"] = name
+    if position:
+        command["position"] = position
+    if size:
+        command["size"] = size
     async with c4d_connection_context() as connection:
-        if not connection.connected:
-            return "❌ Not connected to Cinema 4D"
-
-        # Prepare command
-        command = {
-            "command": "add_primitive",
-            "type": primitive_type,
-        }
-
-        if name:
-            command["object_name"] = name
-        if position:
-            command["position"] = position
-        if size:
-            command["size"] = size
-
-        # Send command to Cinema 4D
-        response = send_to_c4d(connection, command)
-
-        if "error" in response:
-            return f"❌ Error: {response['error']}"
-
-        object_info = response.get("object", {})
-        return response
+        return _run_command(connection, command)
 
 
 @mcp.tool()
@@ -245,54 +235,20 @@ async def modify_object(
         properties: Dictionary of properties to modify (position, rotation, scale, etc.)
     """
     async with c4d_connection_context() as connection:
-        if not connection.connected:
-            return "❌ Not connected to Cinema 4D"
-
-        # Send command to Cinema 4D
-        response = send_to_c4d(
+        return _run_command(
             connection,
-            {
-                "command": "modify_object",
-                "object_name": object_name,
-                "properties": properties,
-            },
+            {"command": "modify_object", "object_name": object_name, "properties": properties},
         )
-
-        if "error" in response:
-            return f"❌ Error: {response['error']}"
-
-        # Generate summary of what was modified
-        modified_props = []
-        for prop, value in properties.items():
-            modified_props.append(f"- **{prop}**: {value}")
-
-        return response
 
 
 @mcp.tool()
 async def list_objects(ctx: Context) -> str:
     """List all objects in the current Cinema 4D scene."""
     async with c4d_connection_context() as connection:
-        if not connection.connected:
-            return "❌ Not connected to Cinema 4D"
-
-        response = send_to_c4d(connection, {"command": "list_objects"})
-
-        if "error" in response:
-            return f"❌ Error: {response['error']}"
-
-        objects = response.get("objects", [])
-        if not objects:
-            return "No objects found in the scene."
-
-        # Format objects as a hierarchical list with indentation
-        object_list = []
-        for obj in objects:
-            # Calculate indentation based on object's depth in hierarchy
-            indent = "  " * obj.get("depth", 0)
-            object_list.append(f"{indent}- **{obj['name']}** ({obj['type']})")
-
-        return response
+        result = _run_command(connection, {"command": "list_objects"})
+        if isinstance(result, str):
+            return result
+        return result
 
 
 @mcp.tool()
@@ -310,26 +266,13 @@ async def create_material(
         color: Optional [R, G, B] color (values 0-1)
         properties: Optional additional material properties
     """
+    command = {"command": "create_material", "material_name": name}
+    if color:
+        command["color"] = color
+    if properties:
+        command["properties"] = properties
     async with c4d_connection_context() as connection:
-        if not connection.connected:
-            return "❌ Not connected to Cinema 4D"
-
-        # Prepare command
-        command = {"command": "create_material", "material_name": name}
-
-        if color:
-            command["color"] = color
-        if properties:
-            command["properties"] = properties
-
-        # Send command to Cinema 4D
-        response = send_to_c4d(connection, command)
-
-        if "error" in response:
-            return f"❌ Error: {response['error']}"
-
-        material_info = response.get("material", {})
-        return response
+        return _run_command(connection, command)
 
 
 @mcp.tool()
@@ -342,23 +285,10 @@ async def apply_material(material_name: str, object_name: str, ctx: Context) -> 
         object_name: Name of the object to apply the material to
     """
     async with c4d_connection_context() as connection:
-        if not connection.connected:
-            return "❌ Not connected to Cinema 4D"
-
-        # Send command to Cinema 4D
-        response = send_to_c4d(
+        return _run_command(
             connection,
-            {
-                "command": "apply_material",
-                "material_name": material_name,
-                "object_name": object_name,
-            },
+            {"command": "apply_material", "material_name": material_name, "object_name": object_name},
         )
-
-        if "error" in response:
-            return f"❌ Error: {response['error']}"
-
-        return response
 
 
 @mcp.tool()
@@ -376,28 +306,15 @@ async def render_frame(
         width: Optional render width in pixels
         height: Optional render height in pixels
     """
+    command = {"command": "render_frame"}
+    if output_path:
+        command["output_path"] = output_path
+    if width:
+        command["width"] = width
+    if height:
+        command["height"] = height
     async with c4d_connection_context() as connection:
-        if not connection.connected:
-            return "❌ Not connected to Cinema 4D"
-
-        # Prepare command
-        command = {"command": "render_frame"}
-
-        if output_path:
-            command["output_path"] = output_path
-        if width:
-            command["width"] = width
-        if height:
-            command["height"] = height
-
-        # Send command to Cinema 4D
-        response = send_to_c4d(connection, command)
-
-        if "error" in response:
-            return f"❌ Error: {response['error']}"
-
-        render_info = response.get("render_info", {})
-        return response
+        return _run_command(connection, command)
 
 
 @mcp.tool()
@@ -414,11 +331,7 @@ async def set_keyframe(
         frame: Frame number to set the keyframe at
     """
     async with c4d_connection_context() as connection:
-        if not connection.connected:
-            return "❌ Not connected to Cinema 4D"
-
-        # Send command to Cinema 4D
-        response = send_to_c4d(
+        return _run_command(
             connection,
             {
                 "command": "set_keyframe",
@@ -429,11 +342,6 @@ async def set_keyframe(
             },
         )
 
-        if "error" in response:
-            return f"❌ Error: {response['error']}"
-
-        return response
-
 
 @mcp.tool()
 async def save_scene(file_path: Optional[str] = None, ctx: Context = None) -> str:
@@ -443,23 +351,11 @@ async def save_scene(file_path: Optional[str] = None, ctx: Context = None) -> st
     Args:
         file_path: Optional path to save the scene to
     """
+    command = {"command": "save_scene"}
+    if file_path:
+        command["file_path"] = file_path
     async with c4d_connection_context() as connection:
-        if not connection.connected:
-            return "❌ Not connected to Cinema 4D"
-
-        # Prepare command
-        command = {"command": "save_scene"}
-
-        if file_path:
-            command["file_path"] = file_path
-
-        # Send command to Cinema 4D
-        response = send_to_c4d(connection, command)
-
-        if "error" in response:
-            return f"❌ Error: {response['error']}"
-
-        return response
+        return _run_command(connection, command)
 
 
 @mcp.tool()
@@ -471,18 +367,7 @@ async def load_scene(file_path: str, ctx: Context) -> str:
         file_path: Path to the scene file to load
     """
     async with c4d_connection_context() as connection:
-        if not connection.connected:
-            return "❌ Not connected to Cinema 4D"
-
-        # Send command to Cinema 4D
-        response = send_to_c4d(
-            connection, {"command": "load_scene", "file_path": file_path}
-        )
-
-        if "error" in response:
-            return f"❌ Error: {response['error']}"
-
-        return response
+        return _run_command(connection, {"command": "load_scene", "file_path": file_path})
 
 
 @mcp.tool()
@@ -496,22 +381,11 @@ async def create_mograph_cloner(
         cloner_type: Type of cloner (grid, radial, linear)
         name: Optional name for the cloner
     """
+    command = {"command": "create_mograph_cloner", "mode": cloner_type}
+    if name:
+        command["cloner_name"] = name
     async with c4d_connection_context() as connection:
-        if not connection.connected:
-            return "❌ Not connected to Cinema 4D"
-
-        command = {"command": "create_mograph_cloner", "mode": cloner_type}
-
-        if name:
-            command["cloner_name"] = name
-
-        response = send_to_c4d(connection, command)
-
-        if "error" in response:
-            return f"❌ Error: {response['error']}"
-
-        object_info = response.get("object", {})
-        return response
+        return _run_command(connection, command)
 
 
 @mcp.tool()
@@ -529,25 +403,13 @@ async def add_effector(
         name: Optional name for the effector
         target: Optional target object (e.g., cloner) to apply the effector to
     """
+    command = {"command": "add_effector", "effector_type": effector_type}
+    if name:
+        command["effector_name"] = name
+    if target:
+        command["cloner_name"] = target
     async with c4d_connection_context() as connection:
-        if not connection.connected:
-            return "❌ Not connected to Cinema 4D"
-
-        command = {"command": "add_effector", "effector_type": effector_type}
-
-        if name:
-            command["effector_name"] = name
-
-        if target:
-            command["cloner_name"] = target
-
-        response = send_to_c4d(connection, command)
-
-        if "error" in response:
-            return f"❌ Error: {response['error']}"
-
-        object_info = response.get("object", {})
-        return response
+        return _run_command(connection, command)
 
 
 @mcp.tool()
@@ -567,50 +429,16 @@ async def apply_mograph_fields(
         field_name: Optional name for the field
         parameters: Optional parameters for the field (strength, falloff)
     """
+    command = {"command": "apply_mograph_fields", "field_type": field_type}
+    if target:
+        command["target_name"] = target
+    if field_name:
+        command["field_name"] = field_name
+    if parameters:
+        command["parameters"] = parameters
+    logger.debug("Sending apply_mograph_fields: %s", command)
     async with c4d_connection_context() as connection:
-        if not connection.connected:
-            return "❌ Not connected to Cinema 4D"
-
-        # Build the command with required parameters
-        command = {"command": "apply_mograph_fields", "field_type": field_type}
-
-        # Add optional parameters
-        if target:
-            command["target_name"] = target
-
-        if field_name:
-            command["field_name"] = field_name
-
-        if parameters:
-            command["parameters"] = parameters
-
-        # Log the command for debugging
-        logger.info(f"Sending apply_mograph_fields command: {command}")
-
-        # Send the command to Cinema 4D
-        response = send_to_c4d(connection, command)
-
-        # Handle error responses
-        if "error" in response:
-            error_msg = response["error"]
-            logger.error(f"Error applying field: {error_msg}")
-            return f"❌ Error: {error_msg}"
-
-        # Extract field info from response
-        field_info = response.get("field", {})
-
-        # Build a response message
-        field_name = field_info.get("name", f"{field_type.capitalize()} Field")
-        applied_to = field_info.get("applied_to", "None")
-
-        # Additional parameters if available
-        params_info = ""
-        if "strength" in field_info:
-            params_info += f"\n- **Strength**: {field_info.get('strength')}"
-        if "falloff" in field_info:
-            params_info += f"\n- **Falloff**: {field_info.get('falloff')}"
-
-        return response
+        return _run_command(connection, command)
 
 
 @mcp.tool()
@@ -622,17 +450,9 @@ async def create_soft_body(object_name: str, ctx: Context = None) -> str:
         object_name: Name of the object to convert to a soft body
     """
     async with c4d_connection_context() as connection:
-        if not connection.connected:
-            return "❌ Not connected to Cinema 4D"
-
-        response = send_to_c4d(
+        return _run_command(
             connection, {"command": "create_soft_body", "object_name": object_name}
         )
-
-        if "error" in response:
-            return f"❌ Error: {response['error']}"
-
-        return response
 
 
 @mcp.tool()
@@ -647,22 +467,10 @@ async def apply_dynamics(
         dynamics_type: Type of dynamics to apply (rigid, soft)
     """
     async with c4d_connection_context() as connection:
-        if not connection.connected:
-            return "❌ Not connected to Cinema 4D"
-
-        response = send_to_c4d(
+        return _run_command(
             connection,
-            {
-                "command": "apply_dynamics",
-                "object_name": object_name,
-                "type": dynamics_type,
-            },
+            {"command": "apply_dynamics", "object_name": object_name, "type": dynamics_type},
         )
-
-        if "error" in response:
-            return f"❌ Error: {response['error']}"
-
-        return response
 
 
 @mcp.tool()
@@ -676,22 +484,11 @@ async def create_abstract_shape(
         shape_type: Type of shape (blob, metaball)
         name: Optional name for the shape
     """
+    command = {"command": "create_abstract_shape", "shape_type": shape_type}
+    if name:
+        command["object_name"] = name
     async with c4d_connection_context() as connection:
-        if not connection.connected:
-            return "❌ Not connected to Cinema 4D"
-
-        command = {"command": "create_abstract_shape", "shape_type": shape_type}
-
-        if name:
-            command["object_name"] = name
-
-        response = send_to_c4d(connection, command)
-
-        if "error" in response:
-            return f"❌ Error: {response['error']}"
-
-        object_info = response.get("object", {})
-        return response
+        return _run_command(connection, command)
 
 
 @mcp.tool()
@@ -709,27 +506,18 @@ async def create_camera(
         position: Optional [x, y, z] position.
         properties: Optional dictionary of camera properties (e.g., {"focal_length": 50}).
     """
-    # Generate a default name if none provided - use the name from the plugin side if needed
-    requested_name = name
-
+    command = {"command": "create_camera"}
+    if name:
+        command["name"] = name
+    if position:
+        command["position"] = position
+    if properties:
+        command["properties"] = properties
     async with c4d_connection_context() as connection:
-        if not connection.connected:
-            # Return error as dictionary for consistency
-            return {"error": "❌ Not connected to Cinema 4D"}
-
-        command = {"command": "create_camera"}
-        if requested_name:
-            command["name"] = (
-                requested_name  # Use the 'name' key expected by the handler
-            )
-        if position:
-            command["position"] = position
-        if properties:
-            command["properties"] = properties
-
-        response = send_to_c4d(connection, command)
-
-        return response
+        result = _run_command(connection, command)
+        if isinstance(result, str):
+            return {"error": result}
+        return result
 
 
 @mcp.tool()
@@ -743,22 +531,11 @@ async def create_light(
         light_type: Type of light (area, dome, spot)
         name: Optional name for the light
     """
+    command = {"command": "create_light", "type": light_type}
+    if name:
+        command["object_name"] = name
     async with c4d_connection_context() as connection:
-        if not connection.connected:
-            return "❌ Not connected to Cinema 4D"
-
-        command = {"command": "create_light", "type": light_type}
-
-        if name:
-            command["object_name"] = name
-
-        response = send_to_c4d(connection, command)
-
-        if "error" in response:
-            return f"❌ Error: {response['error']}"
-
-        object_info = response.get("object", {})
-        return response
+        return _run_command(connection, command)
 
 
 @mcp.tool()
@@ -776,29 +553,13 @@ async def apply_shader(
         material_name: Optional name of material to apply shader to
         object_name: Optional name of object to apply the material to
     """
+    command = {"command": "apply_shader", "shader_type": shader_type}
+    if material_name:
+        command["material_name"] = material_name
+    if object_name:
+        command["object_name"] = object_name
     async with c4d_connection_context() as connection:
-        if not connection.connected:
-            return "❌ Not connected to Cinema 4D"
-
-        command = {"command": "apply_shader", "shader_type": shader_type}
-
-        if material_name:
-            command["material_name"] = material_name
-
-        if object_name:
-            command["object_name"] = object_name
-
-        response = send_to_c4d(connection, command)
-
-        if "error" in response:
-            return f"❌ Error: {response['error']}"
-
-        shader_info = response.get("shader", {})
-        material_name = shader_info.get("material", "New Material")
-        applied_to = shader_info.get("applied_to", "None")
-        applied_msg = f" and applied to '{applied_to}'" if applied_to != "None" else ""
-
-        return response
+        return _run_command(connection, command)
 
 
 @mcp.tool()
@@ -818,72 +579,24 @@ async def animate_camera(
         positions: Optional list of [x,y,z] camera positions for keyframes
         frames: Optional list of frame numbers for keyframes
     """
+    command = {"command": "animate_camera", "path_type": animation_type}
+    if camera_name:
+        command["camera_name"] = camera_name
+    if positions:
+        command["positions"] = positions
+        command["frames"] = frames if frames else [i * 15 for i in range(len(positions))]
+    if animation_type == "orbit" and not positions:
+        radius, height, points = 200, 100, 12
+        orbit_positions = []
+        orbit_frames = []
+        for i in range(points):
+            angle = (i / points) * 2 * math.pi
+            orbit_positions.append([radius * math.cos(angle), height, radius * math.sin(angle)])
+            orbit_frames.append(i * 10)
+        command["positions"] = orbit_positions
+        command["frames"] = orbit_frames
     async with c4d_connection_context() as connection:
-        if not connection.connected:
-            return "❌ Not connected to Cinema 4D"
-
-        # Create command with the animation type
-        command = {"command": "animate_camera", "path_type": animation_type}
-
-        # Add camera name if provided
-        if camera_name:
-            command["camera_name"] = camera_name
-
-        # Handle positions and frames if provided
-        if positions:
-            command["positions"] = positions
-
-            # Generate frames if not provided (starting at 0 with 15 frame intervals)
-            if not frames:
-                frames = [i * 15 for i in range(len(positions))]
-
-            command["frames"] = frames
-
-        if animation_type == "orbit":
-            # For orbit animations, we need to generate positions in a circle
-            # if none are provided
-            if not positions:
-                # Create a set of default positions for an orbit animation
-                radius = 200  # Default orbit radius
-                height = 100  # Default height
-                points = 12  # Number of points around the circle
-
-                orbit_positions = []
-                orbit_frames = []
-
-                # Create positions in a circle
-                for i in range(points):
-                    angle = (i / points) * 2 * 3.14159  # Convert to radians
-                    x = radius * math.cos(angle)
-                    z = radius * math.sin(angle)
-                    y = height
-                    orbit_positions.append([x, y, z])
-                    orbit_frames.append(i * 10)  # 10 frames between positions
-
-                command["positions"] = orbit_positions
-                command["frames"] = orbit_frames
-
-        # Send the command to Cinema 4D
-        response = send_to_c4d(connection, command)
-
-        if "error" in response:
-            return f"❌ Error: {response['error']}"
-
-        # Get the camera animation info
-        camera_info = response.get("camera_animation", {})
-
-        # Build a response message
-        frames_info = ""
-        if "frame_range" in camera_info:
-            frames_info = (
-                f"\n- **Frame Range**: {camera_info.get('frame_range', [0, 0])}"
-            )
-
-        keyframe_info = ""
-        if "keyframe_count" in camera_info:
-            keyframe_info = f"\n- **Keyframes**: {camera_info.get('keyframe_count', 0)}"
-
-        return response
+        return _run_command(connection, command)
 
 
 @mcp.tool()
@@ -895,19 +608,7 @@ async def execute_python_script(script: str, ctx: Context) -> str:
         script: Python code to execute in Cinema 4D
     """
     async with c4d_connection_context() as connection:
-        if not connection.connected:
-            return "❌ Not connected to Cinema 4D"
-
-        # Send command to Cinema 4D
-        response = send_to_c4d(
-            connection, {"command": "execute_python", "script": script}
-        )
-
-        if "error" in response:
-            return f"❌ Error: {response['error']}"
-
-        result = response.get("result", "No output")
-        return response
+        return _run_command(connection, {"command": "execute_python", "script": script})
 
 
 @mcp.tool()
@@ -921,31 +622,11 @@ async def group_objects(
         object_names: List of object names to group
         group_name: Optional name for the group
     """
+    command = {"command": "group_objects", "object_names": object_names}
+    if group_name:
+        command["group_name"] = group_name
     async with c4d_connection_context() as connection:
-        if not connection.connected:
-            return "❌ Not connected to Cinema 4D"
-
-        # Prepare command
-        command = {"command": "group_objects", "object_names": object_names}
-
-        if group_name:
-            command["group_name"] = group_name
-
-        # Send command to Cinema 4D
-        response = send_to_c4d(connection, command)
-
-        if "error" in response:
-            return f"❌ Error: {response['error']}"
-
-        group_info = response.get("group", {})
-
-        # Format object list for display
-        objects_str = ", ".join(object_names)
-        if len(objects_str) > 50:
-            # Truncate if too long
-            objects_str = objects_str[:47] + "..."
-
-        return response
+        return _run_command(connection, command)
 
 
 @mcp.tool()
@@ -963,44 +644,20 @@ async def render_preview(
         height: Optional preview height in pixels
         frame: Optional frame number to render
     """
+    command = {"command": "render_preview"}
+    if width:
+        command["width"] = width
+    if height:
+        command["height"] = height
+    if frame is not None:
+        command["frame"] = frame
     async with c4d_connection_context() as connection:
-        if not connection.connected:
-            return "❌ Not connected to Cinema 4D"
-
-        # Prepare command
-        command = {"command": "render_preview"}
-
-        if width:
-            command["width"] = width
-        if height:
-            command["height"] = height
-        if frame is not None:
-            command["frame"] = frame
-
-        # Set longer timeout for rendering
-        logger.info(f"Sending render_preview command with parameters: {command}")
-
-        # Send command to Cinema 4D
-        response = send_to_c4d(connection, command)
-
-        if "error" in response:
-            return f"❌ Error: {response['error']}"
-
-        # Check if the response contains the base64 image data
-        if "image_data" not in response:
+        result = _run_command(connection, command)
+        if isinstance(result, str):
+            return result
+        if "image_data" not in result:
             return "❌ Error: No image data returned from Cinema 4D"
-
-        # Get image dimensions
-        preview_width = response.get("width", width or "default")
-        preview_height = response.get("height", height or "default")
-
-        # Display the image using markdown
-        image_data = response["image_data"]
-        image_format = response.get("format", "png")
-
-        # Note: The plugin handler handle_render_preview was already designed
-        # to return the structure needed for image display if successful.
-        return response  # Return the raw dictionary
+        return result
 
 
 @mcp.tool()
@@ -1014,38 +671,11 @@ async def snapshot_scene(
         file_path: Optional path to save the snapshot
         include_assets: Whether to include external assets in the snapshot
     """
+    command = {"command": "snapshot_scene", "include_assets": include_assets}
+    if file_path:
+        command["file_path"] = file_path
     async with c4d_connection_context() as connection:
-        if not connection.connected:
-            return "❌ Not connected to Cinema 4D"
-
-        # Prepare command
-        command = {"command": "snapshot_scene"}
-
-        if file_path:
-            command["file_path"] = file_path
-
-        command["include_assets"] = include_assets
-
-        # Send command to Cinema 4D
-        response = send_to_c4d(connection, command)
-
-        if "error" in response:
-            return f"❌ Error: {response['error']}"
-
-        snapshot_info = response.get("snapshot", {})
-
-        # Extract information
-        path = snapshot_info.get("path", file_path or "Default location")
-        size = snapshot_info.get("size", "Unknown")
-        timestamp = snapshot_info.get("timestamp", "Unknown")
-
-        # Format assets information if available
-        assets_info = ""
-        if "assets" in snapshot_info:
-            assets_count = len(snapshot_info["assets"])
-            assets_info = f"\n- **Assets Included**: {assets_count}"
-
-        return response
+        return _run_command(connection, command)
 
 
 @mcp.resource("c4d://primitives")

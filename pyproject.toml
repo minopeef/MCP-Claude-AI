@@ -19,3 +19,6 @@ dependencies = [
 [project.scripts]
 cinema4d-mcp-wrapper = "cinema4d_mcp:main_wrapper"
 cinema4d-mcp = "cinema4d_mcp:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
