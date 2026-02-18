@@ -1,78 +1,57 @@
 #!/usr/bin/env python3
 """
-Cinema 4D MCP Server - Main entry point script
+Cinema 4D MCP Server - Main entry point script.
 
-This script starts the Cinema 4D MCP server either directly or through
-package imports, allowing it to be run both as a script and as a module.
+Runs as a script or module; ensures package is on path and starts the MCP server.
 """
 
-import sys
 import os
-import socket
-import logging
+import sys
 import traceback
 
-# Configure logging to stderr
-logging.basicConfig(
-    level=logging.DEBUG,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[logging.StreamHandler(sys.stderr)],
-)
-
-logger = logging.getLogger("cinema4d-mcp")
-
-# Add the src directory to the Python path
-src_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "src")
-if os.path.exists(src_path):
-    sys.path.insert(0, src_path)
-
-# Add the project root to Python path
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# Ensure package is importable when run as script from project root
+_root = os.path.dirname(os.path.abspath(__file__))
+_src = os.path.join(_root, "src")
+if os.path.isdir(_src):
+    sys.path.insert(0, _src)
+sys.path.insert(0, _root)
 
 
-def log_to_stderr(message):
-    """Log a message to stderr for Claude Desktop to capture."""
-    print(message, file=sys.stderr, flush=True)
+def _log(msg: str) -> None:
+    print(msg, file=sys.stderr, flush=True)
 
 
-def main():
-    """Main entry point function."""
-    log_to_stderr("========== CINEMA 4D MCP SERVER STARTING ==========")
-    log_to_stderr(f"Python version: {sys.version}")
-    log_to_stderr(f"Current directory: {os.getcwd()}")
-    log_to_stderr(f"Python path: {sys.path}")
+def main() -> None:
+    """Main entry point."""
+    _log("========== CINEMA 4D MCP SERVER STARTING ==========")
+    _log(f"Python: {sys.version.split()[0]}")
+    _log(f"CWD: {os.getcwd()}")
 
-    # Check if Cinema 4D socket is available (use package config when importable)
     try:
         from cinema4d_mcp.config import C4D_HOST, C4D_PORT, C4D_TIMEOUT_CHECK
-        c4d_host, c4d_port, c4d_timeout = C4D_HOST, C4D_PORT, C4D_TIMEOUT_CHECK
     except ImportError:
-        c4d_host = os.environ.get("C4D_HOST", "127.0.0.1")
-        c4d_port = int(os.environ.get("C4D_PORT", 5555))
-        c4d_timeout = 5
+        C4D_HOST = os.environ.get("C4D_HOST", "127.0.0.1")
+        C4D_PORT = int(os.environ.get("C4D_PORT", "5555"))
+        C4D_TIMEOUT_CHECK = 5
 
-    log_to_stderr(f"Checking connection to Cinema 4D on {c4d_host}:{c4d_port}")
+    _log(f"Checking Cinema 4D at {C4D_HOST}:{C4D_PORT} ...")
     try:
-        test_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        test_socket.settimeout(c4d_timeout)
-        test_socket.connect((c4d_host, c4d_port))
-        test_socket.close()
-        log_to_stderr("✅ Successfully connected to Cinema 4D socket!")
+        import socket
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.settimeout(C4D_TIMEOUT_CHECK)
+            sock.connect((C4D_HOST, C4D_PORT))
+        _log("✅ Connected to Cinema 4D socket.")
     except Exception as e:
-        log_to_stderr(f"❌ Could not connect to Cinema 4D socket: {e}")
-        log_to_stderr(
-            "   The server will still start, but Cinema 4D integration won't work!"
-        )
+        _log(f"❌ No Cinema 4D socket: {e}")
+        _log("   Server will start; C4D tools will fail until the plugin is running.")
 
     try:
-        log_to_stderr("Importing cinema4d_mcp...")
-        from cinema4d_mcp import main as package_main
-
-        log_to_stderr("🚀 Starting Cinema 4D MCP Server...")
-        package_main()
+        from cinema4d_mcp import main as _run
+        _log("🚀 Starting Cinema 4D MCP Server...")
+        _run()
     except Exception as e:
-        log_to_stderr(f"❌ Error starting server: {e}")
-        log_to_stderr(traceback.format_exc())
+        _log(f"❌ Error: {e}")
+        _log(traceback.format_exc())
         sys.exit(1)
 
 

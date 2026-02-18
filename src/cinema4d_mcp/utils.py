@@ -1,5 +1,7 @@
 """Utility functions for Cinema 4D MCP Server."""
 
+__all__ = ["logger", "check_c4d_connection"]
+
 import socket
 import sys
 import logging
@@ -42,11 +44,9 @@ def check_c4d_connection(
     port = port if port is not None else C4D_PORT
     timeout = timeout if timeout is not None else C4D_TIMEOUT_CHECK
     try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(timeout)
-        result = sock.connect_ex((host, port))
-        sock.close()
-        return result == 0
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.settimeout(timeout)
+            return sock.connect_ex((host, port)) == 0
     except Exception as e:
         logger.error("Error checking Cinema 4D connection: %s", e)
         return False

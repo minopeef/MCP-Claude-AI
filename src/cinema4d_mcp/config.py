@@ -4,6 +4,17 @@ import os
 from dataclasses import dataclass
 from typing import List
 
+__all__ = [
+    "C4D_HOST",
+    "C4D_PORT",
+    "C4D_TIMEOUT_DEFAULT",
+    "C4D_TIMEOUT_LONG",
+    "C4D_TIMEOUT_CHECK",
+    "C4D_LOG_LEVEL",
+    "LONG_TIMEOUT_COMMANDS",
+    "C4DConfig",
+]
+
 # Environment keys
 _ENV_HOST = "C4D_HOST"
 _ENV_PORT = "C4D_PORT"
